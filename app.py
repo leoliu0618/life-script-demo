@@ -211,7 +211,7 @@ def get_ai_response(phase, user_input_text=None, history_for_prompt=None, full_t
 
     try:
         resp = client.chat.completions.create(
-            model="gpt-4o-mini",  # 或者您选择的模型
+            model="gpt-4.1-2025-04-14",  # 或者您选择的模型
             messages=messages_for_llm,
             temperature=0.5,  # 降低一点随机性，使其更遵循指令
         )
