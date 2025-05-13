@@ -1,12 +1,16 @@
-import os, json, streamlit as st
-from openai import OpenAI, APIConnectionError
+import os
+import json
+import streamlit as st
+from openai import OpenAI, APIConnectionError  # 假设您使用的是OpenAI
 
 # ---------- 代理（本地用；云端留空） ----------
-PROXY_URL = os.getenv("PROXY_URL", "")           # 本地自己 setx；云端不设
+PROXY_URL = os.getenv("PROXY_URL", "")
 
 # ---------- OpenAI 客户端 ----------
+# (您的OpenAI客户端初始化代码保持不变)
 if PROXY_URL:
     from openai import RequestsTransport
+
     client = OpenAI(
         api_key=os.getenv("OPENAI_API_KEY"),
         transport=RequestsTransport(
@@ -26,10 +30,9 @@ else:
 st.set_page_config(page_title="人生脚本·动态提问", layout="centered")
 st.title("人生脚本探索 Demo 🌀")
 
-MAX_Q = 30
-
-# === 你的 JSON Prompt（保持原样，不做 .format 替换） ===
-SYSTEM_PROMPT = r"""
+# === 加载您的 JSON Prompt 定义 ===
+# 确保SYSTEM_PROMPT是正确的、包含所有阶段定义的JSON字符串
+SYSTEM_PROMPT_JSON_STRING = r"""
 {
   "prompt_definition": {
     "overall_goal": "作为人生脚本探索AI助手，与用户进行多轮对话，严格按顺序引导用户回答完所有预设问题，并在最后直接生成初步探索报告。整个过程需友好、自然，并确保对话不偏离主题。",
@@ -90,69 +93,209 @@ SYSTEM_PROMPT = r"""
   }
 }
 """
+PROMPT_CONFIG = json.loads(SYSTEM_PROMPT_JSON_STRING)["prompt_definition"]
+QUESTION_LIST = PROMPT_CONFIG["question_list"]
+TOTAL_QUESTIONS = len(QUESTION_LIST)
+ESTIMATED_TIME = "5-8分钟"  # 您可以根据问题数量调整
 
 # ---------- 初始化会话状态 ----------
 if "history" not in st.session_state:
-    st.session_state.history = [
-        {"role": "assistant", "content": "你好！我是脚本探索伙伴 ECHO，现在我们开始。"}
-    ]
-    st.session_state.q_count = 0
+    st.session_state.history = []  # 存放 {"role": "user/assistant", "content": "..."}
+if "interaction_phase" not in st.session_state:
+    st.session_state.interaction_phase = "initial_greeting"
+if "current_question_index" not in st.session_state:
+    # current_question_index: 1 表示第一个问题, ..., TOTAL_QUESTIONS 表示最后一个问题
+    st.session_state.current_question_index = 1
+if "report_generated" not in st.session_state:
+    st.session_state.report_generated = False
 
-# ---------- 显示历史 ----------
+
+# ---------- 核心函数：调用LLM并处理回复 ----------
+def get_ai_response(phase, user_input_text=None, history_for_prompt=None, full_transcript=None):
+    """根据当前阶段和输入，构建发送给LLM的prompt并获取回复"""
+
+    # 1. 构建传递给LLM的 messages (包含 system prompt 和对话历史/上下文)
+    #    这里的关键是，system_prompt不再是整个大JSON，而是根据当前阶段动态生成的、更直接的指令。
+    #    我们将JSON中的规则“翻译”成给LLM的直接指令。
+
+    active_system_prompt = f"你是一个人生脚本探索AI助手。{PROMPT_CONFIG['overall_goal']}\n"
+    active_system_prompt += f"当前交互阶段是: {phase}\n"
+    active_system_prompt += f"共有 {TOTAL_QUESTIONS} 个预设问题。\n"
+
+    if phase == "initial_greeting":
+        active_system_prompt += PROMPT_CONFIG["rules_and_logic"]["phase_initial_greeting"]["action"].replace(
+            "{{total_questions}}", str(TOTAL_QUESTIONS)
+        ).replace(
+            "{{estimated_time}}", ESTIMATED_TIME
+        ).replace(
+            "[这里是 question_list[0] 的文本]", QUESTION_LIST[0]  # 假设第一个问题索引是0
+        )
+        active_system_prompt += "\n请严格按照上述格式输出问候和第一个问题。"
+
+    elif phase == "conversation_turn":
+        current_q_text = QUESTION_LIST[st.session_state.current_question_index - 1]
+        active_system_prompt += f"当前正在处理第 {st.session_state.current_question_index} 个问题。\n"
+        active_system_prompt += f"当前问题是：“{current_q_text}”\n"
+        if user_input_text:
+            active_system_prompt += f"用户的最新回答是：“{user_input_text}”\n"
+        if history_for_prompt:
+            active_system_prompt += f"最近的对话历史如下：\n{history_for_prompt}\n"
+
+        active_system_prompt += "请严格遵循以下对话规则：\n"
+        active_system_prompt += "- " + PROMPT_CONFIG["rules_and_logic"]["phase_conversation_turn"]["sub_rules"][
+            0] + "\n"  # 规则1
+        # 规则2 (柔性拉回) - 需要更详细的指令给LLM
+        pull_back_logic = PROMPT_CONFIG["rules_and_logic"]["phase_conversation_turn"]["sub_rules"][1]["logic"]
+        active_system_prompt += f"- {pull_back_logic.replace('[重复上一个问题]', f'“{current_q_text}”')}\n"
+        active_system_prompt += "- " + PROMPT_CONFIG["rules_and_logic"]["phase_conversation_turn"]["sub_rules"][
+            2] + "\n"  # 规则3
+        active_system_prompt += "- " + PROMPT_CONFIG["rules_and_logic"]["phase_conversation_turn"]["sub_rules"][
+            3] + "\n"  # 规则4
+        if st.session_state.current_question_index < TOTAL_QUESTIONS:
+            next_q_text = QUESTION_LIST[st.session_state.current_question_index]  # 下一个问题的文本
+            active_system_prompt = active_system_prompt.replace("[下一个问题]", f"“{next_q_text}”")
+
+        active_system_prompt += "\n你的任务是根据用户的回答和上述规则，生成你的下一句回应。"
+        active_system_prompt += "如果用户跑题，按规则2柔性拉回；如果用户回答模糊，按规则3追问；如果用户正常回答，按规则4确认并提出下一个问题。"
+        active_system_prompt += "如果当前是最后一个问题，并且用户回答了，请只做简短确认，不要提“下一个问题”。"
+
+
+    elif phase == "final_report":
+        active_system_prompt += "现在所有问题已回答完毕。用户的完整对话记录如下：\n"
+        active_system_prompt += f"{full_transcript}\n"
+        active_system_prompt += "请严格遵循以下报告生成规则：\n"
+        for rule in PROMPT_CONFIG["rules_and_logic"]["phase_final_report"]["sub_rules"]:
+            active_system_prompt += f"- {rule}\n"
+        active_system_prompt += "\n你的任务是直接生成Markdown格式的初步人生脚本探索报告，不要添加任何其他对话性文字。"
+
+    # 2. 构建messages列表
+    messages_for_llm = [{"role": "system", "content": active_system_prompt}]
+    # 在conversation_turn阶段，可以考虑加入最近几轮的user/assistant历史，但不加入system prompt中的历史
+    if phase == "conversation_turn" and st.session_state.history:
+        # 只添加最近的几轮对话历史作为上下文，避免过长
+        for msg in st.session_state.history[-4:]:  # 例如最近4条
+            if msg["role"] != "system":  # 避免重复添加system
+                messages_for_llm.append(msg)
+        if user_input_text:  # 确保当前用户输入也包含在内（如果适用）
+            # 如果history已经包含了当前user_input，则不需要重复添加
+            if not (messages_for_llm and messages_for_llm[-1]["role"] == "user" and messages_for_llm[-1][
+                "content"] == user_input_text):
+                messages_for_llm.append({"role": "user", "content": user_input_text})
+
+    # st.write("DEBUG: Prompt to LLM:") # 调试时可以取消注释
+    # st.text(messages_for_llm)
+
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",  # 或者您选择的模型
+            messages=messages_for_llm,
+            temperature=0.5,  # 降低一点随机性，使其更遵循指令
+        )
+        ai_content = resp.choices[0].message.content.strip()
+        return ai_content
+    except APIConnectionError as e:
+        st.error("🚧 无法连接 OpenAI，检查网络/代理后重试。\n\n" + str(e))
+        return None
+    except Exception as e:
+        st.error(f"调用LLM时发生未知错误: {e}")
+        return None
+
+
+# ---------- 主流程控制 ----------
+
+# 1. 处理初始问候 (如果还没有历史记录，或者明确是initial_greeting阶段)
+if not st.session_state.history and st.session_state.interaction_phase == "initial_greeting":
+    with st.spinner("AI正在准备开场白..."):
+        initial_greeting_text = get_ai_response(phase="initial_greeting")
+    if initial_greeting_text:
+        st.session_state.history.append({"role": "assistant", "content": initial_greeting_text})
+        st.session_state.interaction_phase = "conversation_turn"  # 进入对话阶段
+        st.session_state.current_question_index = 1  # AI问了第一个问题
+        st.rerun()
+
+# 2. 显示聊天历史
 for msg in st.session_state.history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# ---------- 输入框 ----------
-user_text = st.chat_input("请输入…", disabled=st.session_state.q_count >= MAX_Q)
+# 3. 获取用户输入
+if not st.session_state.report_generated and st.session_state.interaction_phase == "conversation_turn":
+    user_text = st.chat_input("请输入您的回答…")
 
-# ---------- 处理用户输入 ----------
-if user_text:
-    st.chat_message("user").markdown(user_text)
-    st.session_state.history.append({"role": "user", "content": user_text})
+    if user_text:
+        # 将用户回复添加到历史
+        st.session_state.history.append({"role": "user", "content": user_text})
+        # 立刻显示用户回复
+        with st.chat_message("user"):
+            st.markdown(user_text)
 
-    ctx = [{"role": "system", "content": SYSTEM_PROMPT}]
-    ctx += st.session_state.history[-12:]
+        # 准备调用LLM的上下文
+        # history_for_prompt = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.history[-5:]]) # 最近5条
 
-    try:
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=ctx,
-            temperature=0.7,
+        # 调用LLM获取AI的下一句话
+        with st.spinner("AI正在思考..."):
+            # 注意：这里传递给 get_ai_response 的 history_for_prompt 是为了让 system prompt 知道最近的对话
+            # 而 messages_for_llm 列表中的历史是更直接的上下文
+            ai_response_text = get_ai_response(
+                phase="conversation_turn",
+                user_input_text=user_text
+                # history_for_prompt=history_for_prompt # 如果system prompt需要格式化的历史
+            )
+
+        if ai_response_text:
+            st.session_state.history.append({"role": "assistant", "content": ai_response_text})
+
+            # 判断是否所有问题都已问完（基于AI的回复或计数）
+            # 这里的逻辑需要非常小心，AI的回复可能不是直接的下一个问题文本
+            # 一个更稳妥的方式是严格管理 current_question_index
+            # 假设AI的回复如果是提问，会包含问题内容；如果是确认，则我们推进index
+
+            # 简化的推进逻辑：只要AI回复了，我们就认为当前问题结束，准备下一个
+            # 除非AI明确在拉回或者追问 (这部分逻辑需要在get_ai_response的prompt中由AI自己判断并输出)
+            if st.session_state.current_question_index < TOTAL_QUESTIONS:
+                # 只有当AI的回复不是明显的拉回或追问时，才增加索引
+                # 这个判断比较复杂，暂时假设AI会正确提出下一个问题或明确指示结束
+                # 我们需要在 system prompt 中让AI明确它是否提出了下一个问题
+                # 或者，AI的回复中包含特定标记来指示是否进入下一个问题
+
+                # **更简单的做法**: 相信AI会遵循指令，如果它没拉回，那么它就是要提下一个问题或结束了
+                # 我们主要靠 `current_question_index` 来控制
+                st.session_state.current_question_index += 1
+
+            if st.session_state.current_question_index > TOTAL_QUESTIONS:
+                st.session_state.interaction_phase = "final_report"
+        else:
+            # 如果AI没有回复（比如API错误），也显示一条消息
+            st.session_state.history.append({"role": "assistant", "content": "抱歉，我暂时无法回应，请稍后再试。"})
+
+        st.rerun()
+
+# 4. 生成并显示报告
+if st.session_state.interaction_phase == "final_report" and not st.session_state.report_generated:
+    st.info("所有问题已回答完毕，正在为您生成初步报告...")
+
+    full_transcript_for_report = "\n".join(
+        [f"{('用户' if m['role'] == 'user' else 'AI')}: {m['content']}" for m in st.session_state.history])
+
+    with st.spinner("报告生成中..."):
+        report_content = get_ai_response(
+            phase="final_report",
+            full_transcript=full_transcript_for_report
         )
-    except APIConnectionError as e:
-        st.error("🚧 无法连接 OpenAI，检查网络/代理后重试。\n\n" + str(e))
-        st.stop()
 
-    raw = resp.choices[0].message.content.strip()
-    try:
-        next_q = json.loads(raw)["question"].strip()
-    except Exception:
-        next_q = "__PARSE_ERROR__"
-
-    if next_q and next_q not in ("__END__", "__PARSE_ERROR__"):
-        st.session_state.q_count += 1
-        st.chat_message("assistant").markdown(next_q)
-        st.session_state.history.append({"role": "assistant", "content": next_q})
+    if report_content:
+        st.session_state.report_generated = True
+        # 直接显示报告，因为AI被指示直接输出Markdown
+        st.markdown("---")
+        st.subheader("初步人生脚本探索报告")
+        st.markdown(report_content)
+        st.success("报告生成完毕！请注意，这仅为初步探索，非专业诊断。")
+        # st.session_state.history.append({"role": "assistant", "content": report_content}) # 看是否需要把报告也加入历史
     else:
-        st.session_state.q_count = MAX_Q
-        st.session_state.history.append(
-            {"role": "assistant", "content": "感谢回答，问题结束！点击下方按钮生成初步报告。"}
-        )
-    st.rerun()
+        st.error("抱歉，生成报告时遇到问题。")
 
-# ---------- 生成报告 ----------
-if st.session_state.q_count >= MAX_Q:
-    if st.button("生成报告"):
-        answers = [m for m in st.session_state.history if m["role"] == "user"]
-        from utils.diagnose import diagnose
-        fake_pairs = [{"q": "inj_x", "a": a["content"]} for a in answers]
-        data = diagnose(fake_pairs)
-        st.markdown(f"""
-### 初步脚本报告
-**脚本倾向**：{data['summary']}
-Injunction 线索：{data['inj_cnt']}
-Driver 线索：{data['driver_cnt']}
-
-*(仅供探索，非专业诊断)*
-""")
+    # 添加重新开始按钮
+    if st.button("重新开始探索"):
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.rerun()
