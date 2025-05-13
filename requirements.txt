@@ -1,0 +1,6 @@
+streamlit>=1.30
+openai>=1.0.0
+tiktoken
+jinja2
+python-dotenv
+numpy

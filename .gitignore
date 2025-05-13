@@ -1,0 +1,9 @@
+# 不要推 .env 和虚拟环境
+.env
+.venv/
+# Python 缓存
+__pycache__/
+*.pyc
+# VSCode / PyCharm 之类 IDE 配置
+.idea/
+.vscode/
