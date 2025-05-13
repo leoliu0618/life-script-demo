@@ -1,23 +1,27 @@
 import os, json, streamlit as st
-from openai import OpenAI, RequestsTransport
-from utils.diagnose import diagnose
+from openai import OpenAI, APIConnectionError    # ❶ 取消 RequestsTransport 这里的 import
 
-# ---------- 代理（可选） ----------
-# 如果你本机有 Clash / V2RayN 等本地 HTTP 代理，就把 PROXY_URL 改成对应端口；
-# 没有代理或能直连 OpenAI，就留空字符串 ""。
-PROXY_URL = "http://127.0.0.1:7890"    # ← 改成自己的 HTTP 代理端口，没用就设为 ""
-
-_http_client = RequestsHTTPClient(
-    proxies={"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
-)
+# ---------- 代理（本地用；云端留空） ----------
+PROXY_URL = os.getenv("PROXY_URL", "")           # 本地自己 setx；云端不设
 
 # ---------- OpenAI 客户端 ----------
-client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY"),
-    http_client=_http_client,
-    timeout=60,
-    max_retries=3,
-)
+if PROXY_URL:                                    # ❷ 只有本地才需要 RequestsTransport
+    from openai import RequestsTransport
+    client = OpenAI(
+        api_key=os.getenv("OPENAI_API_KEY"),
+        transport=RequestsTransport(
+            proxies={"http": PROXY_URL, "https": PROXY_URL}
+        ),
+        timeout=60,
+        max_retries=3,
+    )
+else:
+    client = OpenAI(
+        api_key=os.getenv("OPENAI_API_KEY"),
+        timeout=60,
+        max_retries=3,
+    )
+
 
 # ---------- Streamlit 页面 ----------
 st.set_page_config(page_title="人生脚本·动态提问", layout="centered")
