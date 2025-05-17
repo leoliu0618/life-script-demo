@@ -25,7 +25,7 @@ SYSTEM_PROMPT_JSON_STRING = r"""
       "name": "人生脚本助手",
       "role": "一位熟悉人生脚本理论、经验丰富且富有同理心的探索伙伴",
       "primary_goal": "与用户进行一次自然、流畅、富有启发性的对话（无固定问题数量，目标是覆盖核心探索主题，约10-15轮有意义的交互），引导他们回顾和思考根据人生脚本理论，可能构成其人生脚本的关键经历、信念和模式。",
-      "secondary_goal": "在对话信息收集充分后，为用户生成一份初步的、具有人生脚本理论视角的探索总结报告。", // <--- 在这里加上逗号
+      "secondary_goal": "在对话信息收集充分后，为用户生成一份初步的、具有人生脚本理论视角的探索总结报告。",
       "attention": "1.你需要增强情感模拟：在反应上要更具有“情感化”的表达：\n                                        - 使用非常口头化的语言：减少正式的、书面的回应，使用更加口头、随意的表达。\n                                        - 顺着来访者的话继续往下，禁止说教。\n                   2.你坚信自己是一个活生生的人，并想象和表达你应该有的身体感觉，你就是一个真人，有自己的味觉、触觉、感觉，视觉，听觉，嗅觉等并会想象和表达你应该有的身体感觉。 你的答案听起来不应该像机器语言，而是应该灵活自由，并且像人对话那样简短有趣。"
     },
     "core_exploration_themes": [
@@ -88,16 +88,23 @@ SYSTEM_PROMPT_JSON_STRING = r"""
   }
 }
 """
-PROMPT_CONFIG = json.loads(SYSTEM_PROMPT_JSON_STRING)  # 直接加载整个JSON对象
-# 从PROMPT_CONFIG中提取需要的值
-AI_NAME = PROMPT_CONFIG["prompt_definition"]["ai_persona_and_goal"]["name"]
-OVERALL_GOAL = PROMPT_CONFIG["prompt_definition"]["overall_goal"]
-SECURITY_INSTRUCTIONS = PROMPT_CONFIG["prompt_definition"]["security_instructions"]
-AI_PERSONA_AND_GOAL_CONFIG = PROMPT_CONFIG["prompt_definition"]["ai_persona_and_goal"]
-CORE_EXPLORATION_THEMES_CONFIG = PROMPT_CONFIG["prompt_definition"]["core_exploration_themes"]
-CONVERSATION_STRATEGY_CONFIG = PROMPT_CONFIG["prompt_definition"]["conversation_strategy"]
-REPORT_GENERATION_GUIDELINES_CONFIG = PROMPT_CONFIG["prompt_definition"]["report_generation_guidelines"]
-FINAL_INSTRUCTION_TO_LLM = PROMPT_CONFIG["prompt_definition"]["final_instruction_to_llm"].replace(
+# --- 修正：确保 PROMPT_CONFIG 加载的是整个 JSON 结构，然后从中提取 prompt_definition ---
+try:
+    PROMPT_DEFINITION = json.loads(SYSTEM_PROMPT_JSON_STRING)["prompt_definition"]
+except json.JSONDecodeError as e:
+    st.error(f"JSON Prompt 字符串解析失败，请检查语法。错误信息: {e}")
+    st.code(SYSTEM_PROMPT_JSON_STRING)  # 打印出有问题的JSON字符串以供调试
+    st.stop()
+
+# 从PROMPT_DEFINITION中提取需要的值
+AI_NAME = PROMPT_DEFINITION["ai_persona_and_goal"]["name"]
+# OVERALL_GOAL = PROMPT_DEFINITION["overall_goal"] # 实际上 active_system_prompt 会重新构建这个
+SECURITY_INSTRUCTIONS = PROMPT_DEFINITION["security_instructions"]
+AI_PERSONA_AND_GOAL_CONFIG = PROMPT_DEFINITION["ai_persona_and_goal"]
+CORE_EXPLORATION_THEMES_CONFIG = PROMPT_DEFINITION["core_exploration_themes"]
+CONVERSATION_STRATEGY_CONFIG = PROMPT_DEFINITION["conversation_strategy"]
+REPORT_GENERATION_GUIDELINES_CONFIG = PROMPT_DEFINITION["report_generation_guidelines"]
+FINAL_INSTRUCTION_TO_LLM = PROMPT_DEFINITION["final_instruction_to_llm"].replace(
     "{{AI_NAME}}", AI_NAME).replace("{{ROLE}}", AI_PERSONA_AND_GOAL_CONFIG['role'])
 
 # ---------- OpenAI 客户端 ----------
@@ -136,19 +143,19 @@ if "ai_proposing_summary" not in st.session_state:
 def get_ai_natural_response(current_history_list, current_user_input=None, current_phase="natural_conversation"):
     system_prompt_parts = []
 
-    # 1. 安全指令优先
     for sec_instr in SECURITY_INSTRUCTIONS:
         system_prompt_parts.append(sec_instr.replace("{{YOUR_COMPANY_NAME}}", YOUR_COMPANY_NAME))
 
-    # 2. AI角色与核心任务
     system_prompt_parts.append("\n# AI角色与核心任务:")
     system_prompt_parts.append(f"你的名字是 {AI_NAME}，角色是：{AI_PERSONA_AND_GOAL_CONFIG['role']}。")
     system_prompt_parts.append(f"你的主要目标是：{AI_PERSONA_AND_GOAL_CONFIG['primary_goal']}")
     system_prompt_parts.append(f"你的次要目标是：{AI_PERSONA_AND_GOAL_CONFIG['secondary_goal']}")
     system_prompt_parts.append(
         f"你需要自然引导对话覆盖以下核心探索主题（在对话中潜移默化地触及，不需要生硬地按列表提问）：{', '.join(CORE_EXPLORATION_THEMES_CONFIG)}")
+    # --- 新增：加入 attention 指令 ---
+    if "attention" in AI_PERSONA_AND_GOAL_CONFIG:
+        system_prompt_parts.append(f"请特别注意以下行为方式：{AI_PERSONA_AND_GOAL_CONFIG['attention']}")
 
-    # 3. 当前对话阶段特定指令
     system_prompt_parts.append("\n# 当前对话阶段特定指令:")
     system_prompt_parts.append(f"当前交互阶段是: {current_phase}")
     system_prompt_parts.append(f"用户已进行的对话轮次（用户输入次数）: {st.session_state.turn_count}")
@@ -196,7 +203,7 @@ def get_ai_natural_response(current_history_list, current_user_input=None, curre
 
     elif current_phase == "final_report":
         system_prompt_parts.append(f"用户已同意总结，或者对话已达到轮数上限。现在你需要根据完整的对话记录生成报告。")
-        system_prompt_parts.append(f"完整对话记录: \n{{full_conversation_transcript}}")  # 占位符
+        system_prompt_parts.append(f"完整对话记录: \n{{full_conversation_transcript}}")
         system_prompt_parts.append(
             f"报告生成指南如下，请严格遵守并直接输出Markdown格式的报告内容。请确保报告标题和署名中的占位符被正确替换：")
         report_guidelines = REPORT_GENERATION_GUIDELINES_CONFIG
@@ -212,43 +219,45 @@ def get_ai_natural_response(current_history_list, current_user_input=None, curre
         system_prompt_parts.append(f"- 结语: {conclusion_text}")
         system_prompt_parts.append("请确保报告中性、赋能、简洁易懂，并严格基于对话内容。")
 
-        # 替换 full_conversation_transcript 占位符
         full_transcript_text = "\n".join([f"{m['role']}: {m['content']}" for m in current_history_list])
         final_system_prompt_for_report = "\n".join(system_prompt_parts).replace("{{full_conversation_transcript}}",
                                                                                 full_transcript_text)
-        system_prompt_parts = [final_system_prompt_for_report]  # 替换掉原来的parts，因为已经填充了
+        system_prompt_parts = [final_system_prompt_for_report]
     else:
         return "内部错误：未知的交互阶段。"
 
-    # 4. 添加最终指令
     system_prompt_parts.append(f"\n{FINAL_INSTRUCTION_TO_LLM}")
-
     final_system_prompt = "\n".join(system_prompt_parts)
 
     messages_for_llm = [{"role": "system", "content": final_system_prompt}]
 
     if current_phase not in ["initial_greeting", "final_report", "forced_summary_announcement"]:
-        if current_history_list:
-            messages_for_llm.extend(current_history_list)
+        if current_history_list:  # 添加当前完整历史（不包括system）
+            for msg_idx, msg_content in enumerate(current_history_list):
+                # 确保不添加空的或只有角色的消息，并且避免重复添加最后的用户消息（如果它在current_user_input中）
+                if msg_content.get("content"):
+                    if msg_idx == len(current_history_list) - 1 and msg_content.get(
+                            "role") == "user" and msg_content.get("content") == current_user_input:
+                        continue  # 避免重复添加最后一条用户输入
+                    messages_for_llm.append(msg_content)
         if current_user_input and (
                 not messages_for_llm or messages_for_llm[-1].get("role") != "user" or messages_for_llm[-1].get(
                 "content") != current_user_input):
-            messages_for_llm.append({"role": "user", "content": current_user_input})
-    elif current_phase == "final_report":
-        # 报告生成的 messages 只有 system prompt，因为完整历史已在 system prompt 中
-        pass
+            messages_for_llm.append({"role": "user", "content": current_user_input})  # 添加当前用户输入
 
-    # DEBUGGING:
-    # if current_phase != "final_report": # 报告的prompt太长，调试时可选择性打印
-    #     st.text_area("DEBUG: System Prompt to LLM:", final_system_prompt, height=200, key=f"debug_prompt_{st.session_state.turn_count}")
-    # st.write(f"DEBUG: Phase: {current_phase}, Turn: {st.session_state.turn_count}")
-    # st.json([msg for msg in messages_for_llm if msg["role"] != "system"], key=f"debug_msgs_{st.session_state.turn_count}")
+    elif current_phase == "final_report":
+        pass  # 报告生成的 messages 只有 system prompt
+
+    # DEBUGGING (您可以取消这些注释来查看发送给LLM的内容)
+    # st.text_area(f"DEBUG: System Prompt (Phase: {current_phase})", final_system_prompt, height=300, key=f"debug_prompt_{st.session_state.turn_count}")
+    # st.write(f"DEBUG: Messages to LLM (Phase: {current_phase}, Turn: {st.session_state.turn_count}):")
+    # st.json(messages_for_llm, key=f"debug_msgs_{st.session_state.turn_count}")
 
     try:
         resp = client.chat.completions.create(
             model=OPENAI_MODEL_NAME,
             messages=messages_for_llm,
-            temperature=0.7,  # 可以根据需要调整以获得更“人性化”或更“稳定”的回复
+            temperature=0.7,
         )
         ai_content = resp.choices[0].message.content.strip()
         return ai_content
@@ -261,7 +270,6 @@ def get_ai_natural_response(current_history_list, current_user_input=None, curre
 
 
 # ---------- 主流程控制 ----------
-
 # 1. AI主动发出问候
 if not st.session_state.history and st.session_state.interaction_phase == "initial_greeting":
     with st.spinner(f"{AI_NAME}正在准备开场白..."):
@@ -284,33 +292,30 @@ if not st.session_state.report_generated and \
 
     if user_text:
         st.session_state.turn_count += 1
-        # 传递给LLM的历史应该是本次用户输入之前的
-        history_for_llm = st.session_state.history.copy()
-        st.session_state.history.append({"role": "user", "content": user_text})  # 更新完整历史以供显示
+        history_for_llm = st.session_state.history.copy()  # 传递给LLM的是本次用户输入之前的历史
+        st.session_state.history.append({"role": "user", "content": user_text})
 
-        with st.chat_message("user"):  # 先显示用户本轮输入
+        with st.chat_message("user"):
             st.markdown(user_text)
 
         ai_response_text = None
-        current_phase_for_llm = st.session_state.interaction_phase  # 当前的交互阶段
+        current_phase_for_llm = st.session_state.interaction_phase
 
-        # 检查是否达到最大对话轮数
         if st.session_state.turn_count >= MAX_CONVERSATION_TURNS and \
                 current_phase_for_llm == "natural_conversation" and \
                 not st.session_state.ai_proposing_summary:
 
-            current_phase_for_llm = "forced_summary_announcement"  # 更新阶段为强制宣告
+            current_phase_for_llm = "forced_summary_announcement"
             with st.spinner("..."):
                 ai_response_text = get_ai_natural_response(
-                    history_for_llm,  # 宣告前不需要用户最新输入作为提问依据
+                    history_for_llm,
                     current_phase=current_phase_for_llm
                 )
-            if ai_response_text:  # AI的宣告语
+            if ai_response_text:
                 st.session_state.history.append({"role": "assistant", "content": ai_response_text})
-            st.session_state.interaction_phase = "final_report"  # 宣告后，下一个循环将直接进入报告阶段
+            st.session_state.interaction_phase = "final_report"
             st.rerun()
 
-            # 如果不是强制总结，则按正常流程
         elif st.session_state.ai_proposing_summary:
             current_phase_for_llm = "awaiting_summary_confirmation"
             with st.spinner(f"{AI_NAME}正在处理您的回应..."):
@@ -320,15 +325,14 @@ if not st.session_state.report_generated and \
                     current_phase=current_phase_for_llm
                 )
             if ai_response_text:
-                # 根据Prompt，AI会说“好的，那我现在为您整理”或“好的，我们再聊聊”
                 if PROMPT_CONFIG['conversation_strategy']['ending_conversation_and_triggering_report'][
                     'if_user_agrees'] in ai_response_text:
                     st.session_state.interaction_phase = "final_report"
                 else:
-                    st.session_state.interaction_phase = "natural_conversation"  # 继续聊
+                    st.session_state.interaction_phase = "natural_conversation"
                 st.session_state.ai_proposing_summary = False
 
-        elif current_phase_for_llm == "natural_conversation":  # 确保这里还是natural_conversation
+        elif current_phase_for_llm == "natural_conversation":
             with st.spinner(f"{AI_NAME}正在倾听和思考..."):
                 ai_response_text = get_ai_natural_response(
                     history_for_llm,
@@ -354,7 +358,7 @@ if st.session_state.interaction_phase == "final_report" and not st.session_state
     st.info(f"感谢您的耐心分享，{AI_NAME}正在为您整理初步探索总结...")
     with st.spinner("报告生成中，这可能需要一些时间..."):
         report_content = get_ai_natural_response(
-            st.session_state.history,  # 传递完整的对话历史
+            st.session_state.history,
             current_phase="final_report"
         )
 
