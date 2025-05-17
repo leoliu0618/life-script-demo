@@ -88,17 +88,21 @@ SYSTEM_PROMPT_JSON_STRING = r"""
   }
 }
 """
-# --- 修正：确保 PROMPT_CONFIG 加载的是整个 JSON 结构，然后从中提取 prompt_definition ---
+# --- 修正：确保 PROMPT_DEFINITION 加载的是整个 JSON 结构中的 "prompt_definition" 部分 ---
 try:
-    PROMPT_DEFINITION = json.loads(SYSTEM_PROMPT_JSON_STRING)["prompt_definition"]
+    PROMPT_DEFINITION_ROOT = json.loads(SYSTEM_PROMPT_JSON_STRING)
+    PROMPT_DEFINITION = PROMPT_DEFINITION_ROOT["prompt_definition"]
 except json.JSONDecodeError as e:
     st.error(f"JSON Prompt 字符串解析失败，请检查语法。错误信息: {e}")
-    st.code(SYSTEM_PROMPT_JSON_STRING)  # 打印出有问题的JSON字符串以供调试
+    # st.code(SYSTEM_PROMPT_JSON_STRING) # 在开发时可以取消注释来显示有问题的JSON
+    st.stop()
+except KeyError:
+    st.error(
+        "JSON Prompt 结构错误，未能找到顶层的 'prompt_definition' 键。请确保JSON最外层是 `{\"prompt_definition\": {...}}` 结构。")
     st.stop()
 
 # 从PROMPT_DEFINITION中提取需要的值
 AI_NAME = PROMPT_DEFINITION["ai_persona_and_goal"]["name"]
-# OVERALL_GOAL = PROMPT_DEFINITION["overall_goal"] # 实际上 active_system_prompt 会重新构建这个
 SECURITY_INSTRUCTIONS = PROMPT_DEFINITION["security_instructions"]
 AI_PERSONA_AND_GOAL_CONFIG = PROMPT_DEFINITION["ai_persona_and_goal"]
 CORE_EXPLORATION_THEMES_CONFIG = PROMPT_DEFINITION["core_exploration_themes"]
@@ -124,7 +128,7 @@ except Exception as e:
 
 # ---------- Streamlit 页面 ----------
 st.set_page_config(page_title=f"{AI_NAME} - 人生脚本探索", layout="wide")
-st.title(f"人生脚本探索 Demo 🌀")
+st.title(f"人生脚本探索 Demo 🌀 (由 {YOUR_COMPANY_NAME} 提供)")
 
 # ---------- 初始化会话状态 ----------
 if "history" not in st.session_state:
@@ -152,8 +156,7 @@ def get_ai_natural_response(current_history_list, current_user_input=None, curre
     system_prompt_parts.append(f"你的次要目标是：{AI_PERSONA_AND_GOAL_CONFIG['secondary_goal']}")
     system_prompt_parts.append(
         f"你需要自然引导对话覆盖以下核心探索主题（在对话中潜移默化地触及，不需要生硬地按列表提问）：{', '.join(CORE_EXPLORATION_THEMES_CONFIG)}")
-    # --- 新增：加入 attention 指令 ---
-    if "attention" in AI_PERSONA_AND_GOAL_CONFIG:
+    if "attention" in AI_PERSONA_AND_GOAL_CONFIG:  # 添加 attention 指令
         system_prompt_parts.append(f"请特别注意以下行为方式：{AI_PERSONA_AND_GOAL_CONFIG['attention']}")
 
     system_prompt_parts.append("\n# 当前对话阶段特定指令:")
@@ -232,24 +235,21 @@ def get_ai_natural_response(current_history_list, current_user_input=None, curre
     messages_for_llm = [{"role": "system", "content": final_system_prompt}]
 
     if current_phase not in ["initial_greeting", "final_report", "forced_summary_announcement"]:
-        if current_history_list:  # 添加当前完整历史（不包括system）
-            for msg_idx, msg_content in enumerate(current_history_list):
-                # 确保不添加空的或只有角色的消息，并且避免重复添加最后的用户消息（如果它在current_user_input中）
-                if msg_content.get("content"):
-                    if msg_idx == len(current_history_list) - 1 and msg_content.get(
-                            "role") == "user" and msg_content.get("content") == current_user_input:
-                        continue  # 避免重复添加最后一条用户输入
+        if current_history_list:
+            for msg_content in current_history_list:
+                if msg_content.get("content"):  # 确保消息有内容
                     messages_for_llm.append(msg_content)
         if current_user_input and (
                 not messages_for_llm or messages_for_llm[-1].get("role") != "user" or messages_for_llm[-1].get(
                 "content") != current_user_input):
-            messages_for_llm.append({"role": "user", "content": current_user_input})  # 添加当前用户输入
+            messages_for_llm.append({"role": "user", "content": current_user_input})
 
     elif current_phase == "final_report":
-        pass  # 报告生成的 messages 只有 system prompt
+        pass
 
-    # DEBUGGING (您可以取消这些注释来查看发送给LLM的内容)
-    # st.text_area(f"DEBUG: System Prompt (Phase: {current_phase})", final_system_prompt, height=300, key=f"debug_prompt_{st.session_state.turn_count}")
+        # DEBUGGING:
+    # if current_phase != "final_report":
+    #     st.text_area(f"DEBUG: System Prompt (Phase: {current_phase})", final_system_prompt, height=300, key=f"debug_prompt_{st.session_state.turn_count}")
     # st.write(f"DEBUG: Messages to LLM (Phase: {current_phase}, Turn: {st.session_state.turn_count}):")
     # st.json(messages_for_llm, key=f"debug_msgs_{st.session_state.turn_count}")
 
@@ -270,7 +270,7 @@ def get_ai_natural_response(current_history_list, current_user_input=None, curre
 
 
 # ---------- 主流程控制 ----------
-# 1. AI主动发出问候
+
 if not st.session_state.history and st.session_state.interaction_phase == "initial_greeting":
     with st.spinner(f"{AI_NAME}正在准备开场白..."):
         ai_opening = get_ai_natural_response([], current_phase="initial_greeting")
@@ -279,12 +279,10 @@ if not st.session_state.history and st.session_state.interaction_phase == "initi
         st.session_state.interaction_phase = "natural_conversation"
         st.rerun()
 
-# 2. 显示聊天历史
 for msg in st.session_state.history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# 3. 获取用户输入和处理对话
 if not st.session_state.report_generated and \
         st.session_state.interaction_phase not in ["final_report", "forced_summary_announcement"]:
 
@@ -292,7 +290,7 @@ if not st.session_state.report_generated and \
 
     if user_text:
         st.session_state.turn_count += 1
-        history_for_llm = st.session_state.history.copy()  # 传递给LLM的是本次用户输入之前的历史
+        history_for_llm = st.session_state.history.copy()
         st.session_state.history.append({"role": "user", "content": user_text})
 
         with st.chat_message("user"):
@@ -353,7 +351,6 @@ if not st.session_state.report_generated and \
         if st.session_state.interaction_phase != "final_report":
             st.rerun()
 
-# 4. 生成并显示报告
 if st.session_state.interaction_phase == "final_report" and not st.session_state.report_generated:
     st.info(f"感谢您的耐心分享，{AI_NAME}正在为您整理初步探索总结...")
     with st.spinner("报告生成中，这可能需要一些时间..."):
