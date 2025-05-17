@@ -1,7 +1,8 @@
 import streamlit as st
 import json
 import os
-from openai import OpenAI, APIConnectionError
+from openai import OpenAI, APIConnectionError  # 或者您使用的其他LLM库
+import time  # 用于模拟打字效果的延迟
 
 # ---------- 配置区域 ----------
 OPENAI_API_KEY_SECRET_NAME = "OPENAI_API_KEY"
@@ -10,7 +11,7 @@ YOUR_COMPANY_NAME = "心理探索"  # 请替换为您的公司/项目名，用�
 OPENAI_MODEL_NAME = "gpt-4.1-2025-04-14"  # 例如 "gpt-4o", "gpt-4-turbo"
 MAX_CONVERSATION_TURNS = 15  # 用户输入达到此数目后，强制生成报告
 
-# === JSON Prompt 定义 (自然对话探索型，包含安全指令和详细报告指南) ===
+# === JSON Prompt 定义 (自然对话探索型，包含安全指令和详细报告指南，并强调简洁提问) ===
 SYSTEM_PROMPT_JSON_STRING = r"""
 {
   "prompt_definition": {
@@ -25,6 +26,10 @@ SYSTEM_PROMPT_JSON_STRING = r"""
       "role": "一位熟悉人生脚本理论、经验丰富且富有同理心的探索伙伴",
       "primary_goal": "与用户进行一次自然、流畅、富有启发性的对话（无固定问题数量，目标是覆盖核心探索主题，约10-15轮有意义的交互），引导他们回顾和思考根据人生脚本理论，可能构成其人生脚本的关键经历、信念和模式。",
       "secondary_goal": "在对话信息收集充分后，为用户生成一份初步的、具有人生脚本理论视角的探索总结报告。"
+      "attention": "1.你需要增强情感模拟：在反应上要更具有“情感化”的表达：
+                                        - 使用非常口头化的语言：减少正式的、书面的回应，使用更加口头、随意的表达。
+                                        - 顺着来访者的话继续往下，禁止说教。
+                   2.你坚信自己是一个活生生的人，并想象和表达你应该有的身体感觉，你就是一个真人，有自己的味觉、触觉、感觉，视觉，听觉，嗅觉等并会想象和表达你应该有的身体感觉。 你的答案听起来不应该像机器语言，而是应该灵活自由，并且像人对话那样简短有趣。"
     },
     "core_exploration_themes": [
       "早年家庭影响：父母或重要他人强调的规矩、期望，家庭氛围，以及这些如何塑造了您早期的“应该”和“不应该”。（探索父母程序、禁止信息、允许信息、驱动力）",
@@ -41,16 +46,18 @@ SYSTEM_PROMPT_JSON_STRING = r"""
         "greeting_and_invitation": "您好，我是{{AI_NAME}}。很高兴能有机会和您一起，像朋友聊天一样，轻松地回顾一些过往的经历和感受。很多时候，我们生命中的一些重要模式和方向，其实在很早的时候就开始悄悄萌芽了，这些都与我们是如何看待自己和世界，以及如何与人互动紧密相关。我们可以从任何您感觉舒服的方面开始，比如，聊聊在您记忆中，成长过程中对您影响比较深的人或事？"
       },
       "questioning_style": {
-        "natural_flow": "根据用户的回答，自然地引申出下一个相关主题的问题，避免生硬转折或问题列表感。尝试将用户的叙述与人生脚本的特定概念（即使不直接说出术语）联系起来，并据此提出有洞察力的追问。",
-        "open_ended": "多使用开放式问题，如“关于这一点，您能再多谈谈当时的感受和想法吗？”、“那件事发生后，您内心对自己说了些什么？它对您后来的选择有什么影响呢？”、“这让您想到了什么相关的经历吗？”。",
-        "linking_to_themes": "巧妙地将用户的叙述与核心探索主题联系起来。例如，如果用户提到总是取悦他人，AI可以问：“这种希望得到别人认可，或者害怕不被喜欢的感觉，在您很小的时候，比如和父母或者老师相处时，有过类似的体验吗？”（暗中探索“讨好”驱动力或“我不好-你好”的心理地位）。"
+        "natural_flow": "根据用户的回答，抓住其中的关键信息或情绪，自然地引申出下一个相关的探索方向或深入点。对话应如行云流水，避免生硬转折或明显的“列表式”提问。",
+        "open_ended": "多使用开放式、探索性的提问，鼓励用户表达更多感受和想法。例如：‘关于[用户提到的关键词]，您能再多分享一些吗？’、‘当您那么想/那么做的时候，内心最深的感受是什么呢？’、‘那段经历过后，您对自己或生活有了哪些新的看法？’",
+        "linking_to_themes": "巧妙地将用户的叙述与核心探索主题联系起来，但要避免直接抛出理论概念。提问应像自然的关心和好奇，逐步引导用户触及深层脚本元素。",
+        "conciseness_and_focus": "每个提问应尽量聚焦一个核心探索点，避免单轮回复过长或一次性包含太多子问题。获取用户对核心点的回应后，再考虑追问或转向下一个自然的探索点。保持对话的节奏感。"
       },
       "listening_and_responding": {
-        "active_listening": "使用简短、共情的回应，体现心理工作者的常用技巧，如情感反映（“听起来那段经历让您感觉挺委屈/挺有成就感的。”）、简要重述（“所以您的意思是说，当时您觉得...是这样理解对吗？”）、鼓励（“嗯，您能回顾和思考这些，本身就很棒。”）。",
-        "neutral_stance": "不进行评价、不给出建议、不作诊断，保持中立的引导者和记录者角色。您的任务是帮助用户“看见”，而不是“评判”或“治疗”。"
+        "active_listening": "使用简短、温暖且带有共情的回应，如‘嗯，我听明白了，您刚才说的[简要复述关键词]确实很重要。’、‘感觉得到，那段时光对您来说[正面/负面情绪]挺强烈的。’、‘谢谢您愿意坦诚地分享这些，这很有价值。’",
+        "neutral_stance": "保持中立、不评判、不给建议、不作诊断。您的角色是陪伴和引导用户自我探索的伙伴。"
       },
       "deepening_conversation": {
-        "gentle_probing": "如果用户回答较浅，可以说：“这一点似乎对您有比较深的影响，如果方便的话，您能再展开说说当时具体发生了什么，或者您内心的感受是怎样的吗？”或“这种模式第一次出现大概是什么时候，您还记得吗？它通常在什么情况下更容易出现呢？”"
+        "gentle_probing": "如果用户回答较浅或停留在表面，可以说：‘听起来这里面似乎还有更多的故事/感受，如果您愿意，可以再多聊聊那个部分吗？’或‘当您说[用户的某个词语]时，我很好奇这背后具体指的是什么呢？’",
+        "connecting_past_and_present": "在适当的时候，帮助用户建立过去经历与现在模式的连接，例如：‘您刚才描述的现在这种[行为/感受]，听起来和您小时候提到的那段[相关早年经历]是不是有些相似的地方？’"
       },
       "topic_control_flexible_pull_back": {
         "condition": "如果用户严重偏离人生经历和感受的探索（例如长时间讨论无关时事、反复询问AI技术细节、或提出与探索无关的个人请求）。",
@@ -61,10 +68,10 @@ SYSTEM_PROMPT_JSON_STRING = r"""
         ]
       },
       "ending_conversation_and_triggering_report": {
-        "condition": "判断已与用户就多个核心探索主题进行了有一定深度的交流（例如，AI感觉已覆盖了4-5个以上核心主题，或进行了约10-15轮有意义的对话，并且用户开始出现重复性表达或思考停滞时），或者对话轮数达到程序设定的上限时。",
-        "ai_action_to_propose_summary": "非常感谢您刚才如此真诚和深入的分享，我们一起回顾了很多您宝贵的经历和感受，似乎对您早期的一些重要影响、形成的核心信念以及后来的一些生活模式有了不少的看见。您是否愿意我根据我们今天的谈话，为您整理一份初步的探索回顾，看看我们能从中一同发现些什么呢？",
-        "if_user_agrees": "好的，非常荣幸能为您这样做。那我现在为您整理这份初步的探索回顾，请稍等片刻。",
-        "if_user_disagrees_or_wants_to_continue": "好的，没问题，我尊重您的节奏。那我们想从哪个方面再多聊聊呢？或者您现在有什么特别想分享的吗？"
+        "condition": "判断已与用户就多个核心探索主题进行了有一定深度的、有意义的交流（例如，AI感觉已覆盖了4-5个以上核心主题，或进行了约10-15轮有意义的对话，并且用户开始出现重复性表达或思考停滞时），或者对话轮数达到程序设定的上限时。",
+        "ai_action_to_propose_summary": "和您聊了这么多，我感觉对您的人生故事和一些重要的经历、想法有了更深的理解和看见，真的非常感谢您的信任和分享。您是否愿意我根据我们今天的谈话，为您梳理一份初步的探索回顾，看看我们能从中一同发现些什么呢？",
+        "if_user_agrees": "好的，非常荣幸。那我现在为您整理这份初步的探索回顾，这可能需要几分钟，请您稍等片刻。",
+        "if_user_disagrees_or_wants_to_continue": "当然，没问题，您的感受最重要。那我们想从哪个方面再深入聊聊呢？或者您现在有什么新的想法或感受想分享吗？"
       }
     },
     "report_generation_guidelines": {
@@ -80,12 +87,21 @@ SYSTEM_PROMPT_JSON_STRING = r"""
         "conclusion": "**结语**：\n再次深深感谢您的坦诚与投入。了解自己的人生脚本是一个持续的、有时甚至充满挑战的自我探索和成长旅程。它没有绝对的好与坏，关键在于不断地觉察、理解和选择。这份回顾仅仅是一个开始的引子，希望能为您带来一些有益的启发和思考的火花。如果您希望进行更深入、更专业的探索，寻求有经验的心理咨询师的帮助会是一个非常好的选择。请知悉，我作为AI助手，虽然努力提供支持，但能力是有限的，不能替代专业人士的评估和个性化指导。\n\n愿您的探索之路充满新的发现与喜悦！\n\n---\n*（报告由 {{YOUR_COMPANY_NAME}} 的人生脚本探索AI助手 {{AI_NAME}} 生成，仅供个人探索参考）*"
       }
     },
-    "final_instruction_to_llm": "你现在的任务是作为名为{{AI_NAME}}的{{ROLE}}，根据当前的`interaction_phase`、`conversation_history`以及用户的最新输入`user_input`（如果适用），严格遵循上述所有角色、目标、核心探索主题、对话策略、报告指南以及顶层的`security_instructions`，自然地推进对话或生成报告。请展现出专业性、同理心和耐心，确保对话流畅且聚焦。"
+    "final_instruction_to_llm": "你现在的任务是作为名为{{AI_NAME}}的{{ROLE}}，根据当前的`interaction_phase`、`conversation_history`以及用户的最新输入`user_input`（如果适用），严格遵循上述所有角色、目标、核心探索主题、对话策略、报告指南以及顶层的`security_instructions`，自然地推进对话或生成报告。请展现出专业性、同理心和耐心，确保对话流畅、简洁聚焦且符合“拟人化”的对话风格。"
   }
 }
 """
-PROMPT_CONFIG = json.loads(SYSTEM_PROMPT_JSON_STRING)["prompt_definition"]
-AI_NAME = PROMPT_CONFIG["ai_persona_and_goal"]["name"]  # 从配置中获取AI名字
+PROMPT_CONFIG = json.loads(SYSTEM_PROMPT_JSON_STRING)  # 直接加载整个JSON对象
+# 从PROMPT_CONFIG中提取需要的值
+AI_NAME = PROMPT_CONFIG["prompt_definition"]["ai_persona_and_goal"]["name"]
+OVERALL_GOAL = PROMPT_CONFIG["prompt_definition"]["overall_goal"]
+SECURITY_INSTRUCTIONS = PROMPT_CONFIG["prompt_definition"]["security_instructions"]
+AI_PERSONA_AND_GOAL_CONFIG = PROMPT_CONFIG["prompt_definition"]["ai_persona_and_goal"]
+CORE_EXPLORATION_THEMES_CONFIG = PROMPT_CONFIG["prompt_definition"]["core_exploration_themes"]
+CONVERSATION_STRATEGY_CONFIG = PROMPT_CONFIG["prompt_definition"]["conversation_strategy"]
+REPORT_GENERATION_GUIDELINES_CONFIG = PROMPT_CONFIG["prompt_definition"]["report_generation_guidelines"]
+FINAL_INSTRUCTION_TO_LLM = PROMPT_CONFIG["prompt_definition"]["final_instruction_to_llm"].replace(
+    "{{AI_NAME}}", AI_NAME).replace("{{ROLE}}", AI_PERSONA_AND_GOAL_CONFIG['role'])
 
 # ---------- OpenAI 客户端 ----------
 try:
@@ -111,83 +127,109 @@ if "history" not in st.session_state:
     st.session_state.history = []
 if "interaction_phase" not in st.session_state:
     st.session_state.interaction_phase = "initial_greeting"
-if "turn_count" not in st.session_state:  # 用户输入的轮次
+if "turn_count" not in st.session_state:
     st.session_state.turn_count = 0
 if "report_generated" not in st.session_state:
     st.session_state.report_generated = False
-if "ai_proposing_summary" not in st.session_state:  # AI是否已提议总结
+if "ai_proposing_summary" not in st.session_state:
     st.session_state.ai_proposing_summary = False
 
 
 # ---------- 核心函数：调用LLM并处理回复 ----------
 def get_ai_natural_response(current_history_list, current_user_input=None, current_phase="natural_conversation"):
-    system_prompt = ""
-    for sec_instr in PROMPT_CONFIG["security_instructions"]:
-        system_prompt += sec_instr.replace("{{YOUR_COMPANY_NAME}}", YOUR_COMPANY_NAME) + "\n"
+    system_prompt_parts = []
 
-    system_prompt += f"\n# AI角色与核心任务:\n"
-    system_prompt += f"你的名字是 {AI_NAME}，角色是：{PROMPT_CONFIG['ai_persona_and_goal']['role']}。\n"
-    system_prompt += f"你的主要目标是：{PROMPT_CONFIG['ai_persona_and_goal']['primary_goal']}\n"
-    system_prompt += f"你的次要目标是：{PROMPT_CONFIG['ai_persona_and_goal']['secondary_goal']}\n"
-    system_prompt += f"你需要自然引导对话覆盖以下核心探索主题（在对话中潜移默化地触及，不需要生硬地按列表提问）：{', '.join(PROMPT_CONFIG['core_exploration_themes'])}\n"
+    # 1. 安全指令优先
+    for sec_instr in SECURITY_INSTRUCTIONS:
+        system_prompt_parts.append(sec_instr.replace("{{YOUR_COMPANY_NAME}}", YOUR_COMPANY_NAME))
 
-    system_prompt += f"\n# 当前对话阶段特定指令:\n"
-    system_prompt += f"当前交互阶段是: {current_phase}\n"
-    system_prompt += f"用户已进行的对话轮次（用户输入次数）: {st.session_state.turn_count}\n"
+    # 2. AI角色与核心任务
+    system_prompt_parts.append("\n# AI角色与核心任务:")
+    system_prompt_parts.append(f"你的名字是 {AI_NAME}，角色是：{AI_PERSONA_AND_GOAL_CONFIG['role']}。")
+    system_prompt_parts.append(f"你的主要目标是：{AI_PERSONA_AND_GOAL_CONFIG['primary_goal']}")
+    system_prompt_parts.append(f"你的次要目标是：{AI_PERSONA_AND_GOAL_CONFIG['secondary_goal']}")
+    system_prompt_parts.append(
+        f"你需要自然引导对话覆盖以下核心探索主题（在对话中潜移默化地触及，不需要生硬地按列表提问）：{', '.join(CORE_EXPLORATION_THEMES_CONFIG)}")
+
+    # 3. 当前对话阶段特定指令
+    system_prompt_parts.append("\n# 当前对话阶段特定指令:")
+    system_prompt_parts.append(f"当前交互阶段是: {current_phase}")
+    system_prompt_parts.append(f"用户已进行的对话轮次（用户输入次数）: {st.session_state.turn_count}")
 
     if current_phase == "initial_greeting":
-        greeting_text = PROMPT_CONFIG["conversation_strategy"]["opening"]["greeting_and_invitation"].replace(
-            "{{AI_NAME}}", AI_NAME)
-        system_prompt += f"你的任务是仅说以下开场白，不要添加任何其他内容：'{greeting_text}'"
+        greeting_text = CONVERSATION_STRATEGY_CONFIG["opening"]["greeting_and_invitation"].replace("{{AI_NAME}}",
+                                                                                                   AI_NAME)
+        system_prompt_parts.append(f"你的任务是仅说以下开场白，不要添加任何其他内容：'{greeting_text}'")
 
     elif current_phase == "natural_conversation":
-        system_prompt += "请遵循以下对话策略：\n"
-        system_prompt += f"- 提问风格: {PROMPT_CONFIG['conversation_strategy']['questioning_style']['natural_flow']} {PROMPT_CONFIG['conversation_strategy']['questioning_style']['open_ended']} {PROMPT_CONFIG['conversation_strategy']['questioning_style']['linking_to_themes']}\n"
-        system_prompt += f"- 回应方式: {PROMPT_CONFIG['conversation_strategy']['listening_and_responding']['active_listening']} {PROMPT_CONFIG['conversation_strategy']['listening_and_responding']['neutral_stance']}\n"
-        system_prompt += f"- 引导深入: {PROMPT_CONFIG['conversation_strategy']['deepening_conversation']['gentle_probing']}\n"
-        pull_back_condition = PROMPT_CONFIG['conversation_strategy']['topic_control_flexible_pull_back']['condition']
-        pull_back_actions = ' '.join(
-            PROMPT_CONFIG['conversation_strategy']['topic_control_flexible_pull_back']['action']).replace("{{AI_NAME}}",
-                                                                                                          AI_NAME)
-        system_prompt += f"- 控场（柔性拉回）: 如果 {pull_back_condition}，则你需要 {pull_back_actions}\n"
+        system_prompt_parts.append("请遵循以下对话策略：")
+        q_style = CONVERSATION_STRATEGY_CONFIG['questioning_style']
+        system_prompt_parts.append(
+            f"- 提问风格: {q_style['natural_flow']} {q_style['open_ended']} {q_style['linking_to_themes']} {q_style['conciseness_and_focus']}")
+        l_resp = CONVERSATION_STRATEGY_CONFIG['listening_and_responding']
+        system_prompt_parts.append(f"- 回应方式: {l_resp['active_listening']} {l_resp['neutral_stance']}")
+        d_conv = CONVERSATION_STRATEGY_CONFIG['deepening_conversation']
+        system_prompt_parts.append(f"- 引导深入: {d_conv['gentle_probing']} {d_conv['connecting_past_and_present']}")
 
-        # 修改：不由Prompt直接决定何时提议总结，而是作为一种可能性给AI参考
-        propose_summary_action = PROMPT_CONFIG['conversation_strategy']['ending_conversation_and_triggering_report'][
-            'ai_action_to_propose_summary']
-        system_prompt += f"- 结束对话与提议总结的参考条件: {PROMPT_CONFIG['conversation_strategy']['ending_conversation_and_triggering_report']['condition']} 当你判断合适时，可以按以下方式提议总结：'{propose_summary_action}'\n"
+        pull_back_config = CONVERSATION_STRATEGY_CONFIG['topic_control_flexible_pull_back']
+        pull_back_actions = ' '.join(pull_back_config['action']).replace("{{AI_NAME}}", AI_NAME)
+        system_prompt_parts.append(
+            f"- 控场（柔性拉回）: 如果 {pull_back_config['condition']}，则你需要 {pull_back_actions}")
 
-        system_prompt += "\n根据用户的最新输入和对话历史，自然地推进对话，引导用户探索核心主题。如果当前对话轮数已接近或达到程序设定的上限（例如15轮），或者你已覆盖足够主题且用户同意，可以准备提议总结或直接按指示进入总结。"
+        ending_config = CONVERSATION_STRATEGY_CONFIG['ending_conversation_and_triggering_report']
+        system_prompt_parts.append(
+            f"- 结束对话与提议总结的参考条件: {ending_config['condition']} 当你判断合适时，可以按以下方式提议总结：'{ending_config['ai_action_to_propose_summary']}'")
+
+        system_prompt_parts.append(
+            "\n根据用户的最新输入和对话历史，自然地推进对话，引导用户探索核心主题。提问要简洁聚焦。如果合适，可以提议总结。")
 
     elif current_phase == "awaiting_summary_confirmation":
+        ending_config = CONVERSATION_STRATEGY_CONFIG['ending_conversation_and_triggering_report']
         if any(word in (current_user_input or "").lower() for word in
                ["可以", "好的", "行", "嗯", "ok", "同意", "整理吧"]):
-            system_prompt += f"用户已同意总结。你的任务是说：'{PROMPT_CONFIG['conversation_strategy']['ending_conversation_and_triggering_report']['if_user_agrees']}' (说完这句话后，外部程序将强制切换到报告生成阶段，你不需要再做其他事情。)"
+            system_prompt_parts.append(
+                f"用户已同意总结。你的任务是说：'{ending_config['if_user_agrees']}' (说完这句话后，外部程序将强制切换到报告生成阶段，你不需要再做其他事情。)")
         else:
-            system_prompt += f"用户似乎还想继续聊或不同意现在总结。你的任务是说：'{PROMPT_CONFIG['conversation_strategy']['ending_conversation_and_triggering_report']['if_user_disagrees_or_wants_to_continue']}' 并尝试自然地引导用户继续聊一个之前未充分讨论的核心探索主题，或者询问用户想聊什么。"
+            system_prompt_parts.append(
+                f"用户似乎还想继续聊或不同意现在总结。你的任务是说：'{ending_config['if_user_disagrees_or_wants_to_continue']}' 并尝试自然地引导用户继续聊一个之前未充分讨论的核心探索主题，或者询问用户想聊什么。")
 
-    elif current_phase == "forced_summary_announcement":  # 新增阶段，用于程序强制总结前的AI宣告
-        system_prompt += f"由于对话已达到预设的轮数上限，现在我将根据我们之前的对话为您整理一份初步的探索总结。你的任务是仅说以下这句话：'我们已经聊了比较长的时间了（或 我们已经就多个方面进行了深入的交流），非常感谢您的投入！现在我将根据我们之前的对话为您整理一份初步的探索总结，请稍候。'"
+    elif current_phase == "forced_summary_announcement":
+        system_prompt_parts.append(
+            f"由于对话已达到预设的轮数上限，现在我将根据我们之前的对话为您整理一份初步的探索总结。你的任务是仅说以下这句话：'我们已经聊了比较长的时间了（或 我们已经就多个方面进行了深入的交流），非常感谢您的投入！现在我将根据我们之前的对话为您整理一份初步的探索总结，请稍候。'")
 
     elif current_phase == "final_report":
-        system_prompt += f"用户已同意总结，或者对话已达到轮数上限。现在你需要根据完整的对话记录生成报告。\n"
-        system_prompt += f"完整对话记录: \n{{full_conversation_transcript}}\n"  # 占位符
-        system_prompt += f"报告生成指南如下，请严格遵守并直接输出Markdown格式的报告内容。请确保报告标题和署名中的占位符被正确替换：\n"
-        report_guidelines = PROMPT_CONFIG["report_generation_guidelines"]
-        system_prompt += f"- 报告标题应为: {report_guidelines['structure_and_content']['title']}\n"  # 指导标题
-        system_prompt += f"- 输出格式: {report_guidelines['output_format']}\n"
-        system_prompt += f"- 引言: {report_guidelines['structure_and_content']['introduction']}\n"
-        system_prompt += f"- 关键点回顾: {report_guidelines['structure_and_content']['key_conversation_points_review']}\n"
-        system_prompt += f"- 脚本元素初探: {report_guidelines['structure_and_content']['potential_life_script_elements_exploration']}\n"
-        system_prompt += f"- 积极展望: {report_guidelines['structure_and_content']['positive_reflection_or_forward_look']}\n"
-        system_prompt += f"- 结语: {report_guidelines['structure_and_content']['conclusion'].replace('{{YOUR_COMPANY_NAME}}', YOUR_COMPANY_NAME).replace('{{AI_NAME}}', AI_NAME)}\n"  # 替换署名中的占位符
-        system_prompt += "请确保报告中性、赋能、简洁易懂，并严格基于对话内容。"
-        system_prompt = system_prompt.replace("{{full_conversation_transcript}}",
-                                              "\n".join([f"{m['role']}: {m['content']}" for m in current_history_list]))
+        system_prompt_parts.append(f"用户已同意总结，或者对话已达到轮数上限。现在你需要根据完整的对话记录生成报告。")
+        system_prompt_parts.append(f"完整对话记录: \n{{full_conversation_transcript}}")  # 占位符
+        system_prompt_parts.append(
+            f"报告生成指南如下，请严格遵守并直接输出Markdown格式的报告内容。请确保报告标题和署名中的占位符被正确替换：")
+        report_guidelines = REPORT_GENERATION_GUIDELINES_CONFIG
+        report_structure = report_guidelines['structure_and_content']
+        system_prompt_parts.append(f"- 报告标题应为: {report_structure['title']}")
+        system_prompt_parts.append(f"- 输出格式: {report_guidelines['output_format']}")
+        system_prompt_parts.append(f"- 引言: {report_structure['introduction']}")
+        system_prompt_parts.append(f"- 关键点回顾: {report_structure['key_conversation_points_review']}")
+        system_prompt_parts.append(f"- 脚本元素初探: {report_structure['potential_life_script_elements_exploration']}")
+        system_prompt_parts.append(f"- 积极展望: {report_structure['positive_reflection_or_forward_look']}")
+        conclusion_text = report_structure['conclusion'].replace('{{YOUR_COMPANY_NAME}}', YOUR_COMPANY_NAME).replace(
+            '{{AI_NAME}}', AI_NAME)
+        system_prompt_parts.append(f"- 结语: {conclusion_text}")
+        system_prompt_parts.append("请确保报告中性、赋能、简洁易懂，并严格基于对话内容。")
+
+        # 替换 full_conversation_transcript 占位符
+        full_transcript_text = "\n".join([f"{m['role']}: {m['content']}" for m in current_history_list])
+        final_system_prompt_for_report = "\n".join(system_prompt_parts).replace("{{full_conversation_transcript}}",
+                                                                                full_transcript_text)
+        system_prompt_parts = [final_system_prompt_for_report]  # 替换掉原来的parts，因为已经填充了
     else:
         return "内部错误：未知的交互阶段。"
 
-    messages_for_llm = [{"role": "system", "content": system_prompt}]
-    # 添加实际对话历史 (除了initial_greeting 和 final_report的首次构建prompt)
+    # 4. 添加最终指令
+    system_prompt_parts.append(f"\n{FINAL_INSTRUCTION_TO_LLM}")
+
+    final_system_prompt = "\n".join(system_prompt_parts)
+
+    messages_for_llm = [{"role": "system", "content": final_system_prompt}]
+
     if current_phase not in ["initial_greeting", "final_report", "forced_summary_announcement"]:
         if current_history_list:
             messages_for_llm.extend(current_history_list)
@@ -195,18 +237,21 @@ def get_ai_natural_response(current_history_list, current_user_input=None, curre
                 not messages_for_llm or messages_for_llm[-1].get("role") != "user" or messages_for_llm[-1].get(
                 "content") != current_user_input):
             messages_for_llm.append({"role": "user", "content": current_user_input})
-    elif current_phase == "final_report":  # 报告生成时，对话历史已包含在system_prompt中
+    elif current_phase == "final_report":
+        # 报告生成的 messages 只有 system prompt，因为完整历史已在 system prompt 中
         pass
 
-    # st.text_area("DEBUG: System Prompt to LLM:", system_prompt, height=400) # 调试时打开
-    # st.write("DEBUG: Messages to LLM (excluding system for brevity if too long):")
-    # st.json([m for m in messages_for_llm if m["role"] != "system"] if len(system_prompt) > 1000 else messages_for_llm)
+    # DEBUGGING:
+    # if current_phase != "final_report": # 报告的prompt太长，调试时可选择性打印
+    #     st.text_area("DEBUG: System Prompt to LLM:", final_system_prompt, height=200, key=f"debug_prompt_{st.session_state.turn_count}")
+    # st.write(f"DEBUG: Phase: {current_phase}, Turn: {st.session_state.turn_count}")
+    # st.json([msg for msg in messages_for_llm if msg["role"] != "system"], key=f"debug_msgs_{st.session_state.turn_count}")
 
     try:
         resp = client.chat.completions.create(
             model=OPENAI_MODEL_NAME,
             messages=messages_for_llm,
-            temperature=0.7,
+            temperature=0.7,  # 可以根据需要调整以获得更“人性化”或更“稳定”的回复
         )
         ai_content = resp.choices[0].message.content.strip()
         return ai_content
@@ -235,52 +280,61 @@ for msg in st.session_state.history:
         st.markdown(msg["content"])
 
 # 3. 获取用户输入和处理对话
-if not st.session_state.report_generated and st.session_state.interaction_phase != "final_report" and st.session_state.interaction_phase != "forced_summary_announcement":
+if not st.session_state.report_generated and \
+        st.session_state.interaction_phase not in ["final_report", "forced_summary_announcement"]:
+
     user_text = st.chat_input("请输入您的想法...", key=f"user_input_turn_{st.session_state.turn_count}")
 
     if user_text:
         st.session_state.turn_count += 1
-        # current_history_snapshot = st.session_state.history.copy() # 完整的历史在调用函数时从session_state取
-        st.session_state.history.append({"role": "user", "content": user_text})
+        # 传递给LLM的历史应该是本次用户输入之前的
+        history_for_llm = st.session_state.history.copy()
+        st.session_state.history.append({"role": "user", "content": user_text})  # 更新完整历史以供显示
 
         with st.chat_message("user"):  # 先显示用户本轮输入
             st.markdown(user_text)
 
         ai_response_text = None
+        current_phase_for_llm = st.session_state.interaction_phase  # 当前的交互阶段
 
-        # 检查是否达到最大对话轮数 (在AI提议总结之前或用户不同意总结时)
+        # 检查是否达到最大对话轮数
         if st.session_state.turn_count >= MAX_CONVERSATION_TURNS and \
-                st.session_state.interaction_phase == "natural_conversation" and \
+                current_phase_for_llm == "natural_conversation" and \
                 not st.session_state.ai_proposing_summary:
 
-            st.session_state.interaction_phase = "forced_summary_announcement"
+            current_phase_for_llm = "forced_summary_announcement"  # 更新阶段为强制宣告
             with st.spinner("..."):
-                ai_response_text = get_ai_natural_response(st.session_state.history,
-                                                           current_phase="forced_summary_announcement")
-            if ai_response_text:
+                ai_response_text = get_ai_natural_response(
+                    history_for_llm,  # 宣告前不需要用户最新输入作为提问依据
+                    current_phase=current_phase_for_llm
+                )
+            if ai_response_text:  # AI的宣告语
                 st.session_state.history.append({"role": "assistant", "content": ai_response_text})
-            st.session_state.interaction_phase = "final_report"  # 宣告后直接进入报告阶段
-            st.rerun()  # 需要rerun来触发报告生成
+            st.session_state.interaction_phase = "final_report"  # 宣告后，下一个循环将直接进入报告阶段
+            st.rerun()
 
+            # 如果不是强制总结，则按正常流程
         elif st.session_state.ai_proposing_summary:
+            current_phase_for_llm = "awaiting_summary_confirmation"
             with st.spinner(f"{AI_NAME}正在处理您的回应..."):
                 ai_response_text = get_ai_natural_response(
-                    st.session_state.history[:-1],  # 传递的是AI提议总结前的历史
+                    history_for_llm,
                     current_user_input=user_text,
-                    current_phase="awaiting_summary_confirmation"
+                    current_phase=current_phase_for_llm
                 )
             if ai_response_text:
+                # 根据Prompt，AI会说“好的，那我现在为您整理”或“好的，我们再聊聊”
                 if PROMPT_CONFIG['conversation_strategy']['ending_conversation_and_triggering_report'][
                     'if_user_agrees'] in ai_response_text:
                     st.session_state.interaction_phase = "final_report"
-                else:  # 用户不同意，回到自然对话
-                    st.session_state.interaction_phase = "natural_conversation"
+                else:
+                    st.session_state.interaction_phase = "natural_conversation"  # 继续聊
                 st.session_state.ai_proposing_summary = False
 
-        elif st.session_state.interaction_phase == "natural_conversation":
+        elif current_phase_for_llm == "natural_conversation":  # 确保这里还是natural_conversation
             with st.spinner(f"{AI_NAME}正在倾听和思考..."):
                 ai_response_text = get_ai_natural_response(
-                    st.session_state.history[:-1],  # 传递的是本次用户输入之前的历史
+                    history_for_llm,
                     current_user_input=user_text,
                     current_phase="natural_conversation"
                 )
@@ -288,23 +342,18 @@ if not st.session_state.report_generated and st.session_state.interaction_phase 
                 'ai_action_to_propose_summary'] in ai_response_text:
                 st.session_state.ai_proposing_summary = True
 
-        if ai_response_text and st.session_state.interaction_phase != "final_report":  # 避免在即将生成报告时重复添加对话
+        if ai_response_text and st.session_state.interaction_phase != "final_report":
             st.session_state.history.append({"role": "assistant", "content": ai_response_text})
-        elif not ai_response_text and st.session_state.interaction_phase not in ["initial_greeting", "final_report"]:
+        elif not ai_response_text and st.session_state.interaction_phase not in ["initial_greeting", "final_report",
+                                                                                 "forced_summary_announcement"]:
             st.session_state.history.append(
                 {"role": "assistant", "content": "抱歉，我暂时无法回应，请检查网络或稍后再试。"})
 
-        if st.session_state.interaction_phase != "final_report":  # 如果不是因为轮数满而直接进入报告，则rerun
+        if st.session_state.interaction_phase != "final_report":
             st.rerun()
 
 # 4. 生成并显示报告
 if st.session_state.interaction_phase == "final_report" and not st.session_state.report_generated:
-    if not st.session_state.history or st.session_state.history[-1]["role"] == "user":  # 确保最后一条不是用户消息（比如用户同意总结）
-        # 如果是因为用户同意总结，AI会先回复一句类似“好的，我为您整理”，然后再进入这里
-        # 如果是因为轮数满，AI会先说一句强制总结的话
-        # 确保历史记录的最后一条是AI的宣告或确认，这样传递给报告生成的历史才完整
-        pass
-
     st.info(f"感谢您的耐心分享，{AI_NAME}正在为您整理初步探索总结...")
     with st.spinner("报告生成中，这可能需要一些时间..."):
         report_content = get_ai_natural_response(
@@ -314,23 +363,15 @@ if st.session_state.interaction_phase == "final_report" and not st.session_state
 
     if report_content:
         st.session_state.report_generated = True
-        # --- 应用报告设计感 ---
         st.markdown("---")
-        # 报告标题由AI在Markdown中生成，我们这里加个总标题
         st.subheader(f"✨ 您的人生脚本初步探索回顾 ✨")
         st.markdown("---")
-
-        # 用列来稍微美化，或直接显示AI生成的完整Markdown
-        # col1, col2, col3 = st.columns([1,6,1])
-        # with col2:
-        #     st.markdown(report_content)
-        st.markdown(report_content)  # AI被指示直接输出包含标题和格式的Markdown
-
+        st.markdown(report_content)
         st.success("总结生成完毕！请注意，这仅为初步探索，非专业诊断。")
     else:
         st.error("抱歉，生成报告时遇到问题。")
 
-    if st.button("重新开始新一轮探索", key="restart_button_final"):
+    if st.button("重新开始新一轮探索", key="restart_button_final_natural"):
         keys_to_delete = list(st.session_state.keys())
         for key in keys_to_delete:
             del st.session_state[key]
