@@ -124,7 +124,7 @@ except Exception as e:
 
 # ---------- Streamlit 页面 ----------
 st.set_page_config(page_title=f"{AI_NAME} - 人生脚本探索", layout="wide")
-st.title(f"人生脚本探索 Demo 🌀 (由 {YOUR_COMPANY_NAME} 提供)")
+st.title(f"人生脚本探索 Demo 🌀")
 
 # ---------- 初始化会话状态 ----------
 if "history" not in st.session_state:
